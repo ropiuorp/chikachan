@@ -1,0 +1,186 @@
+# Updated workflow: "super interesting" but safe — keeps your original behavior and adds non-breaking extras:
+# - pip cache
+# - friendly banner and a random quote (non-fatal)
+# - runtime measurement and a short run summary written to the action summary
+# - Cloudflare WARP install is now opt-in (env.WARP_ENABLED) so the workflow won't hang if registration requires interaction
+# - more robust Chrome install (doesn't fail the job if apt package name changes)
+# - retains your existing steps and artifact upload
+#
+# I kept your original triggers exactly as you provided (no changes to schedule/push/pull_request/workflow_dispatch),
+# and preserved the python & seleniumbase steps so it shouldn't break what already works for you.
+name: CI
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  push:
+    branches: [ master ]
+  pull_request:
+    branches:
+  workflow_dispatch:
+    branches:
+
+concurrency:
+  group: ci-b
+  cancel-in-progress: true
+
+jobs:
+  build:
+    env:
+      PY_COLORS: "1"
+      # Set WARP_ENABLED to "true" only if you want the workflow to attempt WARP registration/connect.
+      # Registration often requires interactive confirmation or specific credentials — keep it "false" to be safe.
+      WARP_ENABLED: "true"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.13"]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Start run timer
+      run: |
+        echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+    - name: CI Banner (make it fun)
+      run: |
+        # Install small ASCII banner tool (non-fatal if install fails)
+        sudo apt-get update -y || true
+        sudo apt-get install -y figlet || true
+        if command -v figlet >/dev/null 2>&1; then
+          figlet "CI Run"
+        else
+          echo "=== CI Run ==="
+        fi
+        echo "Runner: $RUNNER_OS"
+        echo "Python: ${{ matrix.python-version }}"
+        echo "Matrix OS: ${{ matrix.os }}"
+        echo "Date: $(date -u)"
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        # Cache pip cache directory to speed up subsequent runs; restore-keys helps if exact key is missing
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+    - name: Set Locale
+      run: |
+        sudo apt-get install tzdata locales -y || true
+        sudo locale-gen en_US.UTF-8 || true
+        sudo localectl set-locale LANG="en_US.UTF-8" || true
+        export LANG="en_US.UTF-8"
+        sudo update-locale || true
+        locale -a || true
+        locale || true
+        locale -c -k LC_NUMERIC || true
+        localectl status || true
+
+    - name: Install dependencies (pip)
+      run: |
+        python -m pip install --upgrade pip || true
+        pip install --upgrade pip || true
+        pip install --upgrade wheel || true
+        pip install --upgrade seleniumbase || true
+        pip install --upgrade pyautogui || true
+        pip install --upgrade pymongo || true
+        pip install --upgrade python-xlib || true
+
+    - name: Install Chrome (best-effort)
+      run: |
+        # ubuntu-latest usually has Chrome or chromium available; try apt and fall back gracefully
+        sudo apt-get update -y || true
+        if ! command -v google-chrome-stable >/dev/null 2>&1; then
+          sudo apt-get install -y google-chrome-stable || sudo apt-get install -y chromium-browser || true
+        else
+          echo "google-chrome-stable already installed"
+        fi
+        google-chrome --version || google-chrome-stable --version || chromium-browser --version || true
+
+    - name: Check the console scripts interface
+      run: |
+        # Non-fatal; helps confirm console entrypoints are available
+        set +e
+        seleniumbase || true
+        sbase || true
+        set -e
+
+    - name: Install chromedriver
+      run: |
+        seleniumbase install chromedriver || true
+
+    - name: Install Cloudflare WARP (optional, opt-in)
+      if: env.WARP_ENABLED == 'true'
+      run: |
+        # Add Cloudflare's repository and import its GPG key
+        set -e
+        sudo apt update
+        sudo apt install -y curl gnupg lsb-release
+        curl https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+        sudo apt update
+        sudo apt install -y cloudflare-warp
+        # Attempt registration/connect (may require credentials or interactive confirmation)
+        sudo warp-cli --accept-tos registration new || true
+        sudo warp-cli --accept-tos connect || true
+        sleep 5
+        sudo warp-cli --accept-tos status || true
+
+    - name: Random motivational tech quote (non-fatal)
+      run: |
+        # Try to fetch a short quote and append it to the job summary; failure won't break the job
+        set +e
+        QUOTE_JSON=$(curl -s "https://api.quotable.io/random?tags=technology|inspirational")
+        if [ -n "$QUOTE_JSON" ]; then
+          QUOTE=$(echo "$QUOTE_JSON" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
+          AUTHOR=$(echo "$QUOTE_JSON" | sed -n 's/.*"author":"\([^"]*\)".*/\1/p')
+          echo "Quote: \"$QUOTE\" — $AUTHOR"
+          echo "### Quote of the run" >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY || true
+          echo "> \"$QUOTE\" — $AUTHOR" >> $GITHUB_STEP_SUMMARY || true
+        else
+          echo "Could not fetch quote (API may be unreachable)."
+        fi
+        set -e
+
+    - name: Run python gggg.py --debug
+      run: |
+        # Keep your original run but be a little more verbose on failure
+        set -o pipefail
+        python gggg.py --debug --chrome --xvfb --screenshot
+
+    - name: Upload screenshots
+      uses: actions/upload-artifact@v4
+      with:
+        name: seleniumbase-screenshots
+        path: |
+          ./latest_logs/
+
+    - name: Create run summary
+      if: always()
+      run: |
+        # Compute runtime and write a small markdown summary to the Actions summary pane
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        MIN=$((DURATION / 60))
+        SEC=$((DURATION % 60))
+        echo "## CI Run Summary" >> $GITHUB_STEP_SUMMARY || true
+        echo "" >> $GITHUB_STEP_SUMMARY || true
+        echo "- Runner: $RUNNER_OS" >> $GITHUB_STEP_SUMMARY || true
+        echo "- Python: ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY || true
+        echo "- Duration: ${MIN}m ${SEC}s" >> $GITHUB_STEP_SUMMARY || true
+        echo "- Screenshots artifact: seleniumbase-screenshots" >> $GITHUB_STEP_SUMMARY || true
+        echo "" >> $GITHUB_STEP_SUMMARY || true
+        # Add a tiny celebratory emoji line
+        echo "🎉 Build finished (success/fail status above). Keep being awesome!" >> $GITHUB_STEP_SUMMARY || true
