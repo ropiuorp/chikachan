@@ -38,7 +38,6 @@ with SB(uc=True, test=True,locale=f"{language_code.upper()}") as ffffffffasasd:
         "Emulation.setTimezoneOverride",
         {"timezoneId": timezone_id}
     )
-    ffffffffasasd.set_window_size(resolution.width, resolution.height)
     #"#live-channel-stream-information"
     url = "https://www.twitch.tv/brutalles"
     ffffffffasasd.uc_open_with_reconnect(url, 4)
